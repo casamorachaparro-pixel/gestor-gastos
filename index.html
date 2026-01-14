@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#3B82F6">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Gestor de Gastos</title>
+    
+    <!-- Manifest para PWA -->
+    <link rel="manifest" href="manifest.json">
+    
+    <!-- Íconos -->
+    <link rel="icon" type="image/png" sizes="192x192" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>💰</text></svg>">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>💰</text></svg>">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        * {
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            overscroll-behavior: none;
+        }
+        input, textarea, select {
+            font-size: 16px !important; /* Previene zoom en iOS */
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="root"></div>
+
+    <!-- React -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // CONFIGURACIÓN DEL SCRIPT DE GOOGLE SHEETS
+        const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzeeWkmahllggmnIgSokTvJzAF1U6kRN4NZeMXx_SvNFgGn-LYNiwgpiHRzQjuy5-8dhw/exec';
+
+        const ExpenseManager = () => {
+            const [activeTab, setActiveTab] = useState('resumen');
+            const [showForm, setShowForm] = useState(false);
+            const [editingId, setEditingId] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const [lastSync, setLastSync] = useState(null);
+
+            const [expenses, setExpenses] = useState(() => {
+                const saved = localStorage.getItem('expenses');
+                return saved ? JSON.parse(saved) : {
+                    agua: [], gas: [], luz: [], gastosComunes: [],
+                    internet: [], leasingEstacionamiento: [], leasingBodega: []
+                };
+            });
+
+            const [formData, setFormData] = useState({
+                fecha: new Date().toISOString().split('T')[0],
+                monto: '', fechaBoleta: '', vencimiento: '', medioPago: '',
+                banco: 'Banco de Chile', pagador: 'VFMS', estado: 'Pendiente', boleta: ''
+            });
+
+            const categories = [
+                { id: 'agua', name: 'Agua', color: 'bg-blue-500', sheetName: 'Agua' },
+                { id: 'gas', name: 'Gas', color: 'bg-orange-500', sheetName: 'Gas' },
+                { id: 'luz', name: 'Luz', color: 'bg-yellow-500', sheetName: 'Luz' },
+                { id: 'gastosComunes', name: 'Gastos Comunes', color: 'bg-purple-500', sheetName: 'Gastos Comunes' },
+                { id: 'internet', name: 'Internet', color: 'bg-indigo-500', sheetName: 'Internet' },
+                { id: 'leasingEstacionamiento', name: 'Leasing Estacionamiento', color: 'bg-green-500', sheetName: 'Leasing Estacionamiento' },
+                { id: 'leasingBodega', name: 'Leasing Bodega', color: 'bg-pink-500', sheetName: 'Leasing Bodega' }
+            ];
+
+            const bancos = ['Banco de Chile', 'Banco Estado', 'Otro'];
+            const pagadores = ['VFMS', 'CACK'];
+            const estados = ['Pagado', 'Pendiente'];
+
+            // Guardar en localStorage cuando cambian los gastos
+            useEffect(() => {
+                localStorage.setItem('expenses', JSON.stringify(expenses));
+            }, [expenses]);
+
+            // Funciones de Google Sheets
+            const loadFromGoogleSheets = async (category) => {
+                setLoading(true);
+                try {
+                    const url = `${GOOGLE_SCRIPT_URL}?action=read&category=${category}`;
+                    const response = await fetch(url);
+                    const data = await response.json();
+
+                    if (data.success) {
+                        setExpenses(prev => ({ ...prev, [category]: data.data }));
+                        setLastSync(new Date());
+                        alert(`✅ ${data.data.length} registros sincronizados`);
+                    } else {
+                        alert(`Error: ${data.error}`);
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert('Error al sincronizar. Verifica tu conexión.');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const saveToGoogleSheets = async (category, expenseData) => {
+                try {
+                    const response = await fetch(GOOGLE_SCRIPT_URL, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'write', category, expense: expenseData })
+                    });
+                    return true;
+                } catch (error) {
+                    console.error('Error:', error);
+                    return false;
+                }
+            };
+
+            const updateInGoogleSheets = async (category, expenseData) => {
+                try {
+                    await fetch(GOOGLE_SCRIPT_URL, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'update', category, expense: expenseData })
+                    });
+                    return true;
+                } catch (error) {
+                    console.error('Error:', error);
+                    return false;
+                }
+            };
+
+            const deleteFromGoogleSheets = async (category, id) => {
+                try {
+                    await fetch(GOOGLE_SCRIPT_URL, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'delete', category, id })
+                    });
+                    return true;
+                } catch (error) {
+                    console.error('Error:', error);
+                    return false;
+                }
+            };
+
+            const loadAllCategories = async () => {
+                for (const cat of categories) {
+                    await loadFromGoogleSheets(cat.id);
+                }
+            };
+
+            const resetForm = () => {
+                setFormData({
+                    fecha: new Date().toISOString().split('T')[0],
+                    monto: '', fechaBoleta: '', vencimiento: '', medioPago: '',
+                    banco: 'Banco de Chile', pagador: 'VFMS', estado: 'Pendiente', boleta: ''
+                });
+                setEditingId(null);
+            };
+
+            const handleSubmit = async (category) => {
+                if (!formData.fecha || !formData.monto) {
+                    alert('Completa Fecha y Monto');
+                    return;
+                }
+
+                const newExpense = {
+                    id: editingId || `${Date.now()}`,
+                    ...formData,
+                    monto: parseFloat(formData.monto)
+                };
+
+                // Guardar localmente
+                if (editingId) {
+                    setExpenses(prev => ({
+                        ...prev,
+                        [category]: prev[category].map(exp => exp.id === editingId ? newExpense : exp)
+                    }));
+                    await updateInGoogleSheets(category, newExpense);
+                } else {
+                    setExpenses(prev => ({
+                        ...prev,
+                        [category]: [...prev[category], newExpense]
+                    }));
+                    await saveToGoogleSheets(category, newExpense);
+                }
+
+                alert('✅ Guardado');
+                resetForm();
+                setShowForm(false);
+            };
+
+            const handleEdit = (category, expense) => {
+                setFormData(expense);
+                setEditingId(expense.id);
+                setActiveTab(category);
+                setShowForm(true);
+            };
+
+            const handleDelete = async (category, id) => {
+                if (confirm('¿Eliminar este registro?')) {
+                    setExpenses(prev => ({
+                        ...prev,
+                        [category]: prev[category].filter(exp => exp.id !== id)
+                    }));
+                    await deleteFromGoogleSheets(category, id);
+                    alert('✅ Eliminado');
+                }
+            };
+
+            const calculateStats = (data) => {
+                if (data.length === 0) return { quarterly: 0, semiannual: 0, annual: 0, monthly: 0 };
+
+                const now = new Date();
+                const filterByPeriod = (months) => {
+                    const cutoff = new Date(now.getFullYear(), now.getMonth() - months + 1, 1);
+                    return data.filter(exp => new Date(exp.fecha) >= cutoff);
+                };
+
+                const calcAvg = (arr) => arr.length > 0 ? arr.reduce((sum, exp) => sum + exp.monto, 0) / arr.length : 0;
+                const calcTotal = (arr) => arr.reduce((sum, exp) => sum + exp.monto, 0);
+
+                return {
+                    quarterly: calcAvg(filterByPeriod(3)),
+                    semiannual: calcAvg(filterByPeriod(6)),
+                    annual: calcAvg(filterByPeriod(12)),
+                    monthly: calcTotal(filterByPeriod(1))
+                };
+            };
+
+            const getTotalSummary = () => {
+                const totals = {};
+                categories.forEach(cat => {
+                    totals[cat.id] = calculateStats(expenses[cat.id]);
+                });
+                return totals;
+            };
+
+            const shareWhatsApp = () => {
+                const summary = getTotalSummary();
+                let message = '📊 *Resumen de Gastos*\n\n';
+                let total = 0;
+                categories.forEach(cat => {
+                    const stats = summary[cat.id];
+                    message += `💰 ${cat.name}: $${stats.monthly.toLocaleString()}\n`;
+                    total += stats.monthly;
+                });
+                message += `\n*TOTAL: $${total.toLocaleString()}*`;
+                window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank');
+            };
+
+            // Componentes UI
+            const FormField = ({ label, type = 'text', value, onChange, options, required = false }) => (
+                <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                        {label} {required && <span className="text-red-500">*</span>}
+                    </label>
+                    {options ? (
+                        <select value={value} onChange={onChange} className="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                            {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
+                    ) : (
+                        <input type={type} value={value} onChange={onChange} required={required}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+                    )}
+                </div>
+            );
+
+            const ExpenseForm = ({ category }) => (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-lg max-w-md w-full max-h-[90vh] overflow-y-auto">
+                        <div className="p-4 border-b flex justify-between items-center sticky top-0 bg-white">
+                            <h3 className="text-lg font-semibold">
+                                {editingId ? 'Editar' : 'Nuevo'} - {categories.find(c => c.id === category)?.name}
+                            </h3>
+                            <button onClick={() => { setShowForm(false); resetForm(); }} className="text-gray-500">✕</button>
+                        </div>
+                        
+                        <div className="p-4">
+                            <FormField label="Fecha" type="date" value={formData.fecha}
+                                onChange={(e) => setFormData({...formData, fecha: e.target.value})} required />
+                            <FormField label="Monto" type="number" value={formData.monto}
+                                onChange={(e) => setFormData({...formData, monto: e.target.value})} required />
+                            <FormField label="Fecha Emisión Boleta" type="date" value={formData.fechaBoleta}
+                                onChange={(e) => setFormData({...formData, fechaBoleta: e.target.value})} />
+                            <FormField label="Vencimiento" type="date" value={formData.vencimiento}
+                                onChange={(e) => setFormData({...formData, vencimiento: e.target.value})} />
+                            <FormField label="Medio de Pago" value={formData.medioPago}
+                                onChange={(e) => setFormData({...formData, medioPago: e.target.value})} />
+                            <FormField label="Banco" value={formData.banco} options={bancos}
+                                onChange={(e) => setFormData({...formData, banco: e.target.value})} />
+                            <FormField label="Pagador" value={formData.pagador} options={pagadores}
+                                onChange={(e) => setFormData({...formData, pagador: e.target.value})} />
+                            <FormField label="Estado" value={formData.estado} options={estados}
+                                onChange={(e) => setFormData({...formData, estado: e.target.value})} />
+                            <FormField label="Link Boleta" value={formData.boleta}
+                                onChange={(e) => setFormData({...formData, boleta: e.target.value})} />
+                            
+                            <button onClick={() => handleSubmit(category)}
+                                className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold">
+                                💾 {editingId ? 'Actualizar' : 'Guardar'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            const ResumenView = () => {
+                const summary = getTotalSummary();
+                const total = categories.reduce((sum, cat) => sum + summary[cat.id].monthly, 0);
+
+                return (
+                    <div className="p-4">
+                        <button onClick={loadAllCategories} disabled={loading}
+                            className="w-full mb-4 bg-blue-500 text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2">
+                            🔄 Sincronizar con Google Sheets
+                        </button>
+
+                        {lastSync && <p className="text-xs text-center text-gray-500 mb-4">
+                            Última sincronización: {lastSync.toLocaleTimeString()}
+                        </p>}
+
+                        <div className="bg-gradient-to-r from-blue-600 to-blue-800 text-white p-6 rounded-lg shadow-lg mb-6">
+                            <h2 className="text-xl font-semibold mb-2">Gasto Total Mensual</h2>
+                            <p className="text-4xl font-bold">${total.toLocaleString()}</p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 mb-6">
+                            {categories.map(cat => (
+                                <div key={cat.id} className={`${cat.color} text-white p-4 rounded-lg shadow-lg`}>
+                                    <p className="text-sm opacity-90">{cat.name}</p>
+                                    <p className="text-2xl font-bold mt-1">${summary[cat.id].monthly.toLocaleString()}</p>
+                                </div>
+                            ))}
+                        </div>
+
+                        <button onClick={shareWhatsApp}
+                            className="w-full bg-green-500 text-white py-3 rounded-lg font-semibold">
+                            📤 Compartir por WhatsApp
+                        </button>
+                    </div>
+                );
+            };
+
+            const CategoryView = ({ category }) => {
+                const cat = categories.find(c => c.id === category);
+                const data = expenses[category];
+                const stats = calculateStats(data);
+
+                return (
+                    <div className="p-4">
+                        <div className={`${cat.color} text-white p-4 rounded-lg shadow-lg mb-4`}>
+                            <h2 className="text-xl font-semibold mb-3">{cat.name}</h2>
+                            <div className="grid grid-cols-3 gap-2 text-sm">
+                                <div><p className="opacity-80">Trimestral</p><p className="font-bold">${Math.round(stats.quarterly).toLocaleString()}</p></div>
+                                <div><p className="opacity-80">Semestral</p><p className="font-bold">${Math.round(stats.semiannual).toLocaleString()}</p></div>
+                                <div><p className="opacity-80">Anual</p><p className="font-bold">${Math.round(stats.annual).toLocaleString()}</p></div>
+                            </div>
+                        </div>
+
+                        <button onClick={() => setShowForm(true)}
+                            className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold mb-4">
+                            ➕ Nuevo Registro
+                        </button>
+
+                        <div className="space-y-3">
+                            {data.length === 0 ? (
+                                <div className="text-center py-8 bg-white rounded-lg shadow">
+                                    <p className="text-gray-500">No hay registros</p>
+                                </div>
+                            ) : (
+                                data.map(exp => (
+                                    <div key={exp.id} className="bg-white p-4 rounded-lg shadow">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <p className="font-bold text-lg">${exp.monto.toLocaleString()}</p>
+                                                <p className="text-sm text-gray-600">{new Date(exp.fecha).toLocaleDateString()}</p>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <button onClick={() => handleEdit(category, exp)} className="text-blue-500">✏️</button>
+                                                <button onClick={() => handleDelete(category, exp.id)} className="text-red-500">🗑️</button>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
+                                            <div><span className="font-semibold">Banco:</span> {exp.banco}</div>
+                                            <div><span className="font-semibold">Pagador:</span> {exp.pagador}</div>
+                                            <div className="col-span-2">
+                                                <span className={`px-2 py-1 rounded ${exp.estado === 'Pagado' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                                                    {exp.estado}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+
+                        {showForm && <ExpenseForm category={category} />}
+                    </div>
+                );
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-100">
+                    <header className="bg-white shadow-md sticky top-0 z-40">
+                        <div className="px-4 py-3">
+                            <h1 className="text-xl font-bold text-gray-800">💰 Gestor de Gastos</h1>
+                        </div>
+                    </header>
+
+                    <main className="pb-24">
+                        {activeTab === 'resumen' ? <ResumenView /> : <CategoryView category={activeTab} />}
+                    </main>
+
+                    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t shadow-lg">
+                        <div className="grid grid-cols-4 gap-1 p-2">
+                            <button onClick={() => setActiveTab('resumen')}
+                                className={`flex flex-col items-center py-2 px-1 rounded ${activeTab === 'resumen' ? 'bg-blue-100 text-blue-600' : 'text-gray-600'}`}>
+                                🏠<span className="text-xs mt-1">Resumen</span>
+                            </button>
+                            {categories.slice(0, 3).map(cat => (
+                                <button key={cat.id} onClick={() => setActiveTab(cat.id)}
+                                    className={`flex flex-col items-center py-2 px-1 rounded ${activeTab === cat.id ? 'bg-blue-100 text-blue-600' : 'text-gray-600'}`}>
+                                    💧<span className="text-xs mt-1">{cat.name}</span>
+                                </button>
+                            ))}
+                        </div>
+                        <div className="grid grid-cols-4 gap-1 p-2 pt-0">
+                            {categories.slice(3).map(cat => (
+                                <button key={cat.id} onClick={() => setActiveTab(cat.id)}
+                                    className={`flex flex-col items-center py-2 px-1 rounded ${activeTab === cat.id ? 'bg-blue-100 text-blue-600' : 'text-gray-600'}`}>
+                                    📦<span className="text-xs mt-1 text-center leading-tight">{cat.name}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </nav>
+                </div>
+            );
+        };
+
+        ReactDOM.render(<ExpenseManager />, document.getElementById('root'));
+    </script>
+
+    <!-- Service Worker para PWA -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').then(() => {
+                console.log('Service Worker registrado');
+            });
+        }
+    </script>
+</body>
+</html>
